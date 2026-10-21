@@ -1,55 +1,72 @@
-#pragma once
 #include "frame_allocator.h"
-#include <cstdint>
 
+#define PAGE_SIZE 4096
+#define PT_ENTRIES 512
+#define PT_LEVELS 3 // choosing 3 levels for the sake of simplicity
+#define VA_BITS 39
+#define VA_LIMIT (1ull << VA_BITS)
 
-static constexpr uint64_t PT_ENTRIES = 512;   
-static constexpr int      PT_LEVELS  = 4;     
+typedef uint64_t v_addr;
+typedef uint64_t pte;
 
-static constexpr uint8_t PERM_READ     = 1 << 0;
-static constexpr uint8_t PERM_WRITE    = 1 << 1;
-static constexpr uint8_t PERM_EXEC     = 1 << 2;
-static constexpr uint8_t PERM_ACCESSED = 1 << 3;
-static constexpr uint8_t PERM_DIRTY    = 1 << 4;
+#define TABLE_BYTES (PT_ENTRIES * sizeof(pte))
 
-struct PageTableNode {
-    PageTableNode* child[PT_ENTRIES];
-    uint64_t       frame[PT_ENTRIES];
-    uint8_t        flags[PT_ENTRIES];
-    bool           present[PT_ENTRIES];
+//---- decoding virtual address (3-level, 39-bit space) ----//
 
-    PageTableNode();
+inline uint64_t va_lvl0(v_addr va) { return (va >> 30) & 0x1FFull; }
+inline uint64_t va_lvl1(v_addr va) { return (va >> 21) & 0x1FFull; }
+inline uint64_t va_lvl2(v_addr va) { return (va >> 12) & 0x1FFull; }
+inline uint64_t va_offset(v_addr va) { return va & 0xFFFull; } // 12-bit offset
+
+//---- defining pte permissions ----//
+
+enum class perms {
+    none = 0,
+    read = 1 << 0,
+    write = 1 << 1,
+    execute = 1 << 3,
+    accessed = 1 << 5,
+    dirty = 1 << 6,
+    present = 1 << 7,
 };
 
-struct WalkResult {
-    bool           present;
-    uint64_t       frame_number;
-    uint8_t        flags;
-    PageTableNode* leaf_node;
-    uint64_t       leaf_index;
+struct page_table_node {
+    page_table_node *child[PT_ENTRIES];
+    uint64_t frame[PT_ENTRIES];
+    uint8_t flags[PT_ENTRIES];
+    bool present[PT_ENTRIES];
+
+    page_table_node();
 };
 
-class PageTable {
-public:
-    explicit PageTable(FrameAllocator& allocator);
-    ~PageTable();
+struct walk_result {
+    bool present;
+    uint64_t frame_number;
+    uint8_t flags;
+    page_table_node *leaf_node; // to flip accessed/dirty bit
+    uint64_t leaf_index;
+};
 
-    // Maps the page containing `vaddr` to a freshly allocated frame.
-    // Creates any missing intermediate tree nodes along the way.
-    // Throws std::runtime_error if already mapped or out of frames.
+class page_table {
+
+  public:
+    page_table(frame_allocator &allocator);
+    ~page_table();
+
+    // maps page containing vaddr to fresh frame.
+    // creates missing tree nodes and throws err if already mapped
     void map(uint64_t vaddr, uint8_t perm);
 
-    // Unmaps the page at `vaddr` if present, and frees its frame.
-    // Does nothing if not mapped.
     void unmap(uint64_t vaddr);
 
-    // Walks the tree without creating any missing nodes.
-    WalkResult walk(uint64_t vaddr);
+    struct walk_result walk(uint64_t vaddr);
 
-private:
-    PageTableNode*   root;
-    FrameAllocator&  allocator_;
+    void dump() const;
+
+  private:
+    page_table_node *root;
+    frame_allocator &allocator_;
 
     static uint64_t index_at_level(uint64_t vaddr, int level);
-    PageTableNode*   get_or_create_child(PageTableNode* node, uint64_t idx);
-    void             free_subtree(PageTableNode* node, int level);
+    page_table_node *get_or_create_child(page_table_node *node, uint64_t idx);
+    void free_subtree(page_table_node *node, int level);
